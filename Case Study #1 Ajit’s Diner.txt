@@ -1,0 +1,251 @@
+Introduction
+Ajit seriously loves Japanese food so in the beginning of 2021, he decides to embark upon a risky venture and opens up a cute little restaurant that sells his 3 favourite foods: sushi, curry and ramen.
+Ajit’s Diner is in need of your assistance to help the restaurant stay afloat — the restaurant has captured some very basic data from their few months of operation but have no idea how to use their data to help them run the business.
+Problem Statement
+Ajit wants to use the data to answer a few simple questions about his customers, especially about their
+•	visiting patterns,
+•	how much money they’ve spent, and
+•	which menu items are their favourite.
+Having this deeper connection with his customers will help him deliver a better and more personalised experience for his loyal customers.
+He plans on using these insights to help him decide whether he should expand the existing customer loyalty program — additionally he needs help to generate some basic datasets so his team can easily inspect the data without needing to use SQL.
+The data set contains the following 3 tables which you may refer to the relationship diagram below to understand the connection.
+•	sales
+•	members
+•	menu
+
+ 
+Case Study Questions :
+
+1.	What is the total amount each customer spent at the restaurant?
+2.	How many days has each customer visited the restaurant?
+3.	What was the first item from the menu purchased by each customer?
+4.	What is the most purchased item on the menu and how many times was it purchased by all customers?
+5.	Which item was the most popular for each customer?
+6.	Which item was purchased first by the customer after they became a member?
+7.	Which item was purchased just before the customer became a member?
+8.	What is the total items and amount spent for each member before they became a member?
+9.	If each $1 spent equates to 10 points and sushi has a 2x points multiplier — how many points would each customer have?
+10.	In the first week after a customer joins the program (including their join date) they earn 2x points on all items, not just sushi — how many points do customer A and B have at the end of January?
+
+Solutions :
+
+1.	What is the total amount each customer spent at the restaurant?
+We use the SUM and GROUP BY functions to find out total spent for each customer and JOIN function because customer_id is from sales table and price is from menu table.
+SELECT s.customer_id, SUM(price) AS total_sales
+FROM dbo.sales AS s
+JOIN dbo.menu AS m
+ON s.product_id = m.product_id
+GROUP BY customer_id; 
+ 
+Answer:
+•	Customer A spent $76.
+•	Customer B spent $74.
+•	Customer C spent $36.
+
+2. How many days has each customer visited the restaurant?
+Use DISTINCT and wrap with COUNT function to find out number of days customer visited the restaurant.
+If we do not use DISTINCT for order_date, the number of days may be repeated. For example, if customer A visited the restaurant twice on ‘2021–01–07’, then number of days may have counted as 2 instead of 1 day.
+SELECT customer_id, COUNT(DISTINCT(order_date)) AS visit_count
+FROM dbo.sales
+GROUP BY customer_id;
+ 
+Answer:
+•	Customer A visited 4 times.
+•	Customer B visited 6 times.
+•	Customer C visited 2 times.
+
+3. What was the first item from the menu purchased by each customer?
+First, we have to create a CTE using WITH function. In the summary CTE, we use DENSE_RANK and OVER(PARTITION BY ORDER BY) to create a new column rank based on order_date.
+I chose to use DENSE_RANK instead of ROW_NUMBER or RANK as the order_date is not time stamped hence, we do not know which item is ordered first if 2 or more items are ordered on the same day.
+WITH ordered_sales_cte AS
+(
+ SELECT customer_id, order_date, product_name,
+  DENSE_RANK() OVER(PARTITION BY s.customer_id
+  ORDER BY s.order_date) AS rank
+ FROM dbo.sales AS s
+ JOIN dbo.menu AS m
+  ON s.product_id = m.product_id
+)
+ 
+Subsequently, we GROUP BY the columns to show rank = 1 only.
+SELECT customer_id, product_name
+FROM ordered_sales_cte
+WHERE rank = 1
+GROUP BY customer_id, product_name;
+ 
+Answer:
+•	Customer A’s first order are curry and sushi.
+•	Customer B’s first order is curry.
+•	Customer C’s first order is ramen.
+
+4. What is the most purchased item on the menu and how many times was it purchased by all customers?
+SELECT TOP 1 (COUNT(s.product_id)) AS most_purchased, product_name
+FROM dbo.sales AS s
+JOIN dbo.menu AS m
+ ON s.product_id = m.product_id
+GROUP BY s.product_id, product_name
+ORDER BY most_purchased DESC;SC;
+ 
+Answer:
+•	Most purchased item on the menu is ramen. Yummy!
+
+5. Which item was the most popular for each customer?
+Again, we create a CTE to rank the number of orders for each product by DESC order for each customer.
+WITH fav_item_cte AS
+(
+ SELECT s.customer_id, m.product_name, 
+  COUNT(m.product_id) AS order_count,
+  DENSE_RANK() OVER(PARTITION BY s.customer_id
+  ORDER BY COUNT(s.customer_id) DESC) AS rank
+FROM dbo.menu AS m
+JOIN dbo.sales AS s
+ ON m.product_id = s.product_id
+GROUP BY s.customer_id, m.product_name
+)
+ 
+Then, we generate results where rank of product = 1 only as the most popular product for individual customer.
+SELECT customer_id, product_name, order_count
+FROM fav_item_cte 
+WHERE rank = 1;
+ 
+•	Customer A and C’s favourite item is ramen.
+•	Customer B enjoys all items in the menu. He/she is a true foodie.
+
+6. Which item was purchased first by the customer after they became a member?
+Yeap, you can guess it! We’re creating another CTE.
+In this CTE, we filter order_date to be on or after their join_date and then rank the product_id by the order_date.
+WITH member_sales_cte AS 
+(
+ SELECT s.customer_id, m.join_date, s.order_date,   s.product_id,
+         DENSE_RANK() OVER(PARTITION BY s.customer_id
+  ORDER BY s.order_date) AS rank
+     FROM sales AS s
+ JOIN members AS m
+  ON s.customer_id = m.customer_id
+ WHERE s.order_date >= m.join_date
+)
+ 
+Next, we filter the table by rank = 1 to show first item purchased by customer.
+SELECT s.customer_id, s.order_date, m2.product_name 
+FROM member_sales_cte AS s
+JOIN menu AS m2
+ ON s.product_id = m2.product_id
+WHERE rank = 1;
+ 
+Answer:
+•	After Customer A became a member, his/her first order is curry, whereas it’s sushi for Customer B.
+
+7. Which item was purchased just before the customer became a member?
+Basically this is a reversed of Question #6. Create a CTE in order
+•	Create new column rank by partitioning customer_id by DESC order_date to find out the order_date just before the customer became member
+•	Filter order_date before join_date.
+WITH prior_member_purchased_cte AS 
+(
+ SELECT s.customer_id, m.join_date, s.order_date, s.product_id,
+         DENSE_RANK() OVER(PARTITION BY s.customer_id
+         ORDER BY s.order_date DESC) AS rank
+ FROM sales AS s
+ JOIN members AS m
+  ON s.customer_id = m.customer_id
+ WHERE s.order_date < m.join_date
+)
+ 
+Then, pull table to show the last item ordered by customer before becoming member.
+SELECT s.customer_id, s.order_date, m2.product_name 
+FROM prior_member_purchased_cte AS s
+JOIN menu AS m2
+ ON s.product_id = m2.product_id
+WHERE rank = 1;
+ 
+Answer:
+•	Customer A’s order before he/she became member is sushi and curry and Customer B’s order is sushi. That must have been a real good sushi!
+
+8. What is the total items and amount spent for each member before they became a member?
+First, filter order_date before their join_date. Then, COUNT unique product_id and SUM the prices total spent before becoming member.
+SELECT s.customer_id, COUNT(DISTINCT s.product_id) AS unique_menu_item, SUM(mm.price) AS total_sales
+FROM sales AS s
+JOIN members AS m
+ ON s.customer_id = m.customer_id
+JOIN menu AS mm
+ ON s.product_id = mm.product_id
+WHERE s.order_date < m.join_date
+GROUP BY s.customer_id;
+ 
+Answer: Before becoming members,
+•	Customer A spent $ 25 on 2 items.
+•	Customer B spent $40 on 2 items.
+
+9. If each $1 spent equates to 10 points and sushi has a 2x points multiplier — how many points would each customer have?
+Let’s breakdown the question.
+•	Each $1 spent = 10 points.
+•	But, sushi (product_id 1) gets 2x points, meaning each $1 spent = 20 points
+So, we use CASE WHEN to create conditional statements
+•	If product_id = 1, then every $1 price multiply by 20 points
+•	All other product_id that is not 1, multiply $1 by 10 points
+So, you can see the table below with new column, points.
+WITH price_points AS
+ (
+ SELECT *, 
+ CASE
+  WHEN product_id = 1 THEN price * 20
+  ELSE price * 10
+  END AS points
+ FROM menu
+ )
+ 
+Using the table above, we SUM the price, match it to the product_id and SUM the total_points.
+SELECT s.customer_id, SUM(p.points) AS total_points
+FROM price_points_cte AS p
+JOIN sales AS s
+ ON p.product_id = s.product_id
+GROUP BY s.customer_id
+ 
+Answer:
+•	Total points for Customer A, B and C are 860, 940 and 360.
+
+10. In the first week after a customer joins the program (including their join date) they earn 2x points on all items, not just sushi — how many points do customer A and B have at the end of January?
+Again, we breakdown the question.
+•	Find out customer’s validity date (which is 6 days after join_date and inclusive of join_date) and last day of Jan 2021 (‘2021–01–21’).
+WITH dates_cte AS 
+(
+ SELECT *, 
+  DATEADD(DAY, 6, join_date) AS valid_date, 
+  EOMONTH('2021-01-31') AS last_date
+ FROM members AS m
+)
+ 
+Then, use CASE WHEN to allocate points by dates and product_name.
+SELECT d.customer_id, s.order_date, d.join_date, 
+ d.valid_date, d.last_date, m.product_name, m.price,
+ SUM(CASE
+  WHEN m.product_name = 'sushi' THEN 2 * 10 * m.price
+  WHEN s.order_date BETWEEN d.join_date AND d.valid_date THEN 2 * 10 * m.price
+  ELSE 10 * m.price
+  END) AS points
+FROM dates_cte AS d
+JOIN sales AS s
+ ON d.customer_id = s.customer_id
+JOIN menu AS m
+ ON s.product_id = m.product_id
+WHERE s.order_date < d.last_date
+GROUP BY d.customer_id, s.order_date, d.join_date, d.valid_date, d.last_date, m.product_name, m.price
+ 
+Our assumptions are
+•	Day -X to Day 1 (customer becomes member (join_date), each $1 spent is 10 points and for sushi, each $1 spent is 20 points.
+•	Day 1 (join_date) to Day 7 (valid_date), each $1 spent for all items is 20 points.
+•	Day 8 to last day of Jan 2021 (last_date), each $1 spent is 10 points and sushi is 2x points.
+Answer:
+•	Customer A has 1,370points.
+•	Customer B has 820 points.
+ 
+Insights
+From the analysis, we discover a few interesting insights that would be certainly useful for Danny.
+•	Customer B is the most frequent visitor with 6 visits in Jan 2021.
+•	Danny’s Diner’s most popular item is ramen, followed by curry and sushi.
+•	Customer A and C loves ramen whereas Customer B seems to enjoy sushi, curry and ramen equally. Who knows, I might be Customer B!
+•	Customer A is the 1st member of Danny’s Diner and his first order is curry. Gotta fulfill his curry cravings!
+•	The last item ordered by Customers A and B before they became members are sushi and curry. Does it mean both of these items are the deciding factor? It must be really delicious for them to sign up as members!
+•	Before they became members, both Customers A and B spent $25 and $40.
+•	Throughout Jan 2021, their points for Customer A: 860, Customer B: 940 and Customer C: 360.
+•	Assuming that members can earn 2x a week from the day they became a member with bonus 2x points for sushi, Customer A has 660 points and Customer B has 340 by the end of Jan 2021.
+v
